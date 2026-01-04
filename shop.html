@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Markdown Notes</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5.2.0/github-markdown.min.css">
+    <style>
+        :root { --bg: #ffffff; --text: #24292f; --border: #d0d7de; }
+        @media (prefers-color-scheme: dark) {
+            :root { --bg: #0d1117; --text: #c9d1d9; --border: #30363d; }
+        }
+        body { margin: 0; height: 100vh; display: grid; grid-template-columns: 1fr; background: var(--bg); color: var(--text); overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+        #editor { 
+            border: none; 
+            padding: 20px; 
+            outline: none; 
+            resize: none; 
+            background: transparent; 
+            color: inherit; 
+            font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace; 
+            font-size: 14px; 
+            line-height: 1.5;
+        }
+        #preview { padding: 20px; overflow-y: auto; }
+        /* Override github markdown body bg to be transparent so it adopts our dark mode variables */
+        .markdown-body { box-sizing: border-box; min-width: 200px; max-width: 980px; margin: 0 auto; background: transparent !important; color: inherit !important; }
+        .toolbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            background: var(--bg);
+            border-bottom: 1px solid var(--border);
+            padding: 8px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            z-index: 100;
+            box-sizing: border-box;
+        }
+        .toolbar button {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 14px;
+            min-width: 36px;
+        }
+        .toolbar button:hover { background: rgba(127, 127, 127, 0.1); }
+        
+        #copy-btn {
+            margin-left: auto;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            font-size: 13px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            opacity: 0.7;
+            transition: all 0.2s;
+        }
+        #copy-btn:hover { opacity: 1; border-color: #8b949e; }
+
+        /* Ensure content isn't hidden behind top toolbar */
+        #editor, #preview { padding-top: 60px; padding-bottom: 20px; }
+        /* Make preview checkboxes clickable */
+        #preview input[type="checkbox"] { cursor: pointer; }
+
+        /* View Mode: Textarea hidden, Preview shown */
+        body.view-mode #editor { display: none !important; }
+        body.view-mode .icon-edit { display: block; }
+        body.view-mode .icon-done { display: none; }
+        body.view-mode .edit-only { display: none; }
+        
+        /* Edit Mode: Textarea shown, Preview hidden */
+        body:not(.view-mode) #preview { display: none !important; }
+        body:not(.view-mode) .icon-edit { display: none; }
+        body:not(.view-mode) .icon-done { display: block; }
+    </style>
+</head>
+<body class="view-mode">
+    <div class="toolbar">
+        <button onclick="document.body.classList.toggle('view-mode')" title="Toggle Edit/View">
+            <svg class="icon-edit" height="16" width="16" viewBox="0 0 16 16" version="1.1" aria-hidden="true" fill="currentColor"><path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.928a.75.75 0 0 1-.927-.927l.928-3.251a1.75 1.75 0 0 1 .445-.756l8.61-8.61Zm1.414 1.06a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354l-1.086-1.086ZM11.189 6.25 9.75 4.81l-6.286 6.287a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064l6.286-6.286Z"></path></svg>
+            <svg class="icon-done" height="16" width="16" viewBox="0 0 16 16" version="1.1" aria-hidden="true" fill="currentColor"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L5.25 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"></path></svg>
+        </button>
+        <button class="edit-only" onclick="insert('\n## ', '')">Header</button>
+        <button class="edit-only" onclick="insert('\n- [ ] ', '')" style="font-size: 16px">☑</button>
+        <button id="copy-btn" title="Copy Link to Clipboard">
+            <svg height="14" width="14" viewBox="0 0 16 16" version="1.1" aria-hidden="true"><path fill="currentColor" d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path><path fill="currentColor" d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path></svg>
+            Share
+        </button>
+    </div>
+    <textarea id="editor" placeholder="# Start typing..."></textarea>
+    <div id="preview" class="markdown-body"></div>
+
+    <script type="module">
+        import { marked } from 'https://cdn.jsdelivr.net/npm/marked@9.1.2/lib/marked.esm.js';
+
+        const editor = document.getElementById('editor');
+        const preview = document.getElementById('preview');
+        
+        const debounce = (fn, delay) => {
+            let timeout;
+            return (...args) => {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => fn(...args), delay);
+            };
+        };
+
+        // Compression Utils (Gzip + Base64Url)
+        async function compress(text) {
+            if (!text) return '';
+            const stream = new CompressionStream('gzip');
+            const writer = stream.writable.getWriter();
+            writer.write(new TextEncoder().encode(text));
+            writer.close();
+            const buffer = await new Response(stream.readable).arrayBuffer();
+            return btoa(String.fromCharCode(...new Uint8Array(buffer)))
+                .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        }
+
+        async function decompress(base64) {
+            if (!base64) return '';
+            try {
+                const str = base64.replace(/-/g, '+').replace(/_/g, '/');
+                const pad = str.length % 4;
+                const padded = pad ? str + '='.repeat(4 - pad) : str;
+                const bytes = Uint8Array.from(atob(padded), c => c.charCodeAt(0));
+                const stream = new DecompressionStream('gzip');
+                const writer = stream.writable.getWriter();
+                writer.write(bytes);
+                writer.close();
+                return await new Response(stream.readable).text();
+            } catch (e) {
+                console.error('Failed to decompress:', e);
+                return '';
+            }
+        }
+
+        const updateHash = debounce(async (text) => {
+            const hash = await compress(text);
+            history.replaceState(null, null, hash ? '#' + hash : location.pathname);
+        }, 500);
+
+        // Helper to insert text at cursor
+        window.insert = (before, after) => {
+            const start = editor.selectionStart;
+            const end = editor.selectionEnd;
+            const text = editor.value;
+            const selection = text.substring(start, end);
+            
+            // Insert text
+            const newText = text.substring(0, start) + before + selection + after + text.substring(end);
+            editor.value = newText;
+            
+            // Restore cursor/selection
+            editor.selectionStart = start + before.length;
+            editor.selectionEnd = end + before.length;
+            editor.focus();
+            
+            render();
+        };
+
+        // Handle checkbox clicks in preview
+        function toggleTask(targetIndex) {
+            const text = editor.value;
+            let matchCount = 0;
+            
+            // Regex for Markdown checkboxes: - [ ] or * [x] etc.
+            const newText = text.replace(/^(\s*[-*+]\s*\[)([ xX])(\])/gm, (match, prefix, state, suffix) => {
+                if (matchCount === targetIndex) {
+                    const newState = state === ' ' ? 'x' : ' ';
+                    matchCount++;
+                    return `${prefix}${newState}${suffix}`;
+                }
+                matchCount++;
+                return match;
+            });
+
+            if (newText !== text) {
+                editor.value = newText;
+                // Preserve scroll pos
+                const scrollPos = preview.scrollTop;
+                render();
+                preview.scrollTop = scrollPos;
+            }
+        }
+
+        function render() {
+            const text = editor.value;
+            preview.innerHTML = marked.parse(text);
+            
+            // Extract title from first H1
+            const h1 = preview.querySelector('h1');
+            document.title = h1 ? h1.innerText : 'Markdown Notes';
+
+            // Make checkboxes interactive
+            const checkboxes = preview.querySelectorAll('input[type="checkbox"]');
+            checkboxes.forEach((cb, index) => {
+                cb.disabled = false;
+                cb.addEventListener('change', () => toggleTask(index));
+            });
+
+            updateHash(text);
+        }
+
+        // Init
+        (async () => {
+            const hash = location.hash.slice(1);
+            if (hash) {
+                editor.value = await decompress(hash);
+            } else {
+                editor.value = "# Boodschappen\n\n- [ ] Melk\n- [ ] Brood\n- [ ] Eieren\n- [ ] Kaas";
+                document.body.classList.remove('view-mode');
+            }
+            render();
+        })();
+
+        editor.addEventListener('input', render);
+
+        editor.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                const start = editor.selectionStart;
+                const value = editor.value;
+                const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+                const lineContent = value.substring(lineStart, start);
+                
+                // If line is a header, allow normal newline
+                if (/^\s*#/.test(lineContent)) return;
+
+                e.preventDefault();
+                insert('\n- [ ] ', '');
+            }
+        });
+
+        document.getElementById('copy-btn').addEventListener('click', async () => {
+            await navigator.clipboard.writeText(location.href);
+            const btn = document.getElementById('copy-btn');
+            const originalHtml = btn.innerHTML;
+            btn.innerText = 'Copied!';
+            setTimeout(() => btn.innerHTML = originalHtml, 2000);
+        });
+    </script>
+</body>
+</html>
