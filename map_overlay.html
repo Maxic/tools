@@ -1,0 +1,2285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NL Map Overlay</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <style>
+        :root { --bg: #ffffff; --text: #24292f; --fill: #e1e4e8; --hover: #ff6600; --stroke: #ffffff; }
+        @media (prefers-color-scheme: dark) {
+            :root { --bg: #0d1117; --text: #c9d1d9; --fill: #21262d; --stroke: #30363d; }
+        }
+        body { 
+            margin: 0; 
+            height: 100vh; 
+            background: var(--bg); 
+            color: var(--text); 
+            font-family: -apple-system, system-ui, sans-serif; 
+            display: flex; 
+            overflow: hidden; 
+        }
+        #main-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+        }
+        #info-panel {
+            width: 320px;
+            background: rgba(127,127,127,0.04);
+            border-left: 1px solid var(--fill);
+            padding: 30px 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        }
+        .info-card {
+            margin-bottom: 24px;
+        }
+        .info-card label {
+            display: block;
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+            opacity: 0.6;
+            margin-bottom: 4px;
+        }
+        .info-value {
+            font-size: 16px;
+            font-weight: 500;
+        }
+        .info-sub {
+            font-size: 13px;
+            opacity: 0.7;
+            font-family: ui-monospace, monospace;
+        }
+        h1 { margin: 20px 0; font-size: 1.5rem; opacity: 0.8; }
+        #map-container {
+            width: 100%;
+            flex: 1;
+            /* Leaflet needs a block container, flex is fine but needs dimensions */
+            padding: 0;
+        }
+        /* Leaflet overrides */
+        .leaflet-container { background: var(--bg) !important; font-family: inherit; }
+        .leaflet-interactive { cursor: crosshair; }
+    </style>
+</head>
+<body>
+    <div id="main-area">
+        <div id="map-container">
+            <span id="loading">Loading Map data...</span>
+        </div>
+    </div>
+    
+    <aside id="info-panel">
+        <div class="info-card">
+            <label>Province</label>
+            <div class="info-value" id="disp-name">-</div>
+        </div>
+        <div class="info-card">
+            <label>Cursor Location</label>
+            <div class="info-sub" id="disp-cursor">-</div>
+        </div>
+        <div class="info-card">
+            <label>Selected Location</label>
+            <div class="info-sub" id="disp-selected" style="color: var(--hover); font-weight: 500;">(Click to pin)</div>
+        </div>
+        <div class="info-card">
+            <label>Municipality</label>
+            <div class="info-value" id="disp-local-name">-</div>
+        </div>
+        <div class="info-card">
+            <label>Voting Preference (2025)</label>
+            <div class="info-value column-list" id="disp-vote-parties" style="font-size: 14px; line-height: 1.5;">-</div>
+        </div>
+        <div class="info-card">
+            <label>Elevation</label>
+            <div class="info-value" id="disp-elevation">-</div>
+        </div>
+        <div class="info-card">
+            <label>Flood Risk (Official)</label>
+            <div class="info-value" id="disp-flood">-</div>
+            <div class="info-sub" id="disp-flood-detail"></div>
+        </div>
+        <div class="info-card">
+            <label>Air Quality (European AQI)</label>
+            <div class="info-value" id="disp-aqi">-</div>
+            <div class="info-sub" id="disp-aqi-detail"></div>
+        </div>
+    </aside>
+
+    <script>
+        // Public domain GeoJSON for Netherlands provinces
+        const MAP_URL = 'https://cartomap.github.io/nl/wgs84/provincie_2023.geojson';
+
+        // PDOK / Rijkswaterstaat (INSPIRE geharmoniseerd) - Overstromingen Risicogebied (ROR)
+        // OGC API Features endpoint (items). We query with a small bbox around the clicked point.
+        const FLOOD_RISK_ITEMS_URL = 'https://api.pdok.nl/rws/overstromingen-risicogebied/ogc/v1/collections/risk_zone/items';
+
+        // PDOK Locatieserver (Reverse Geocoding)
+        const LOCSERVER_URL = 'https://api.pdok.nl/bzk/locatieserver/search/v3_1/reverse';
+
+        // Sample Election Data (Tweede Kamer 2023) - Simplified for key cities + National fallback
+const VOTE_DATA = {
+  "Nederland": [
+    "D66 16.9%",
+    "PVV 16.7%",
+    "VVD 14.2%"
+  ],
+  "Groningen": [
+    "D66 17.5%",
+    "GL-PvdA 17.3%",
+    "PVV 15.6%"
+  ],
+  "Almere": [
+    "PVV 19.2%",
+    "D66 16.7%",
+    "VVD 14.2%"
+  ],
+  "Stadskanaal": [
+    "PVV 26.5%",
+    "CDA 14.9%",
+    "VVD 11.3%"
+  ],
+  "Veendam": [
+    "PVV 24.7%",
+    "VVD 14.3%",
+    "D66 12.4%"
+  ],
+  "Zeewolde": [
+    "VVD 16.8%",
+    "PVV 16.8%",
+    "D66 14.5%"
+  ],
+  "Achtkarspelen": [
+    "PVV 26.6%",
+    "CDA 17.3%",
+    "VVD 9.2%"
+  ],
+  "Ameland": [
+    "CDA 16.1%",
+    "VVD 15.7%",
+    "PVV 15.4%"
+  ],
+  "Harlingen": [
+    "PVV 19.3%",
+    "VVD 14.7%",
+    "D66 13.6%"
+  ],
+  "Heerenveen": [
+    "D66 16.2%",
+    "PVV 15.6%",
+    "VVD 14.3%"
+  ],
+  "Leeuwarden": [
+    "PVV 17.0%",
+    "CDA 15.0%",
+    "D66 13.6%"
+  ],
+  "Ooststellingwerf": [
+    "PVV 18.9%",
+    "CDA 13.0%",
+    "VVD 12.6%"
+  ],
+  "Opsterland": [
+    "PVV 16.2%",
+    "CDA 14.4%",
+    "D66 12.5%"
+  ],
+  "Schiermonnikoog": [
+    "GL-PvdA 22.1%",
+    "D66 20.5%",
+    "CDA 14.6%"
+  ],
+  "Smallingerland": [
+    "PVV 18.4%",
+    "CDA 15.9%",
+    "D66 13.0%"
+  ],
+  "Terschelling": [
+    "D66 18.7%",
+    "VVD 17.1%",
+    "GL-PvdA 15.8%"
+  ],
+  "Vlieland": [
+    "D66 21.0%",
+    "GL-PvdA 17.4%",
+    "VVD 14.7%"
+  ],
+  "Weststellingwerf": [
+    "PVV 21.1%",
+    "VVD 13.8%",
+    "CDA 12.2%"
+  ],
+  "Assen": [
+    "PVV 18.7%",
+    "VVD 14.5%",
+    "D66 14.3%"
+  ],
+  "Coevorden": [
+    "PVV 20.4%",
+    "VVD 15.9%",
+    "CDA 13.5%"
+  ],
+  "Emmen": [
+    "PVV 28.2%",
+    "VVD 12.7%",
+    "CDA 12.3%"
+  ],
+  "Hoogeveen": [
+    "PVV 24.3%",
+    "CDA 16.1%",
+    "VVD 11.7%"
+  ],
+  "Meppel": [
+    "D66 16.8%",
+    "PVV 15.2%",
+    "VVD 14.9%"
+  ],
+  "Almelo": [
+    "PVV 24.1%",
+    "VVD 13.6%",
+    "D66 13.1%"
+  ],
+  "Borne": [
+    "CDA 18.7%",
+    "VVD 17.5%",
+    "D66 16.3%"
+  ],
+  "Dalfsen": [
+    "CDA 22.0%",
+    "VVD 14.0%",
+    "PVV 13.7%"
+  ],
+  "Deventer": [
+    "D66 20.6%",
+    "GL-PvdA 17.9%",
+    "PVV 13.0%"
+  ],
+  "Enschede": [
+    "PVV 19.5%",
+    "D66 16.9%",
+    "GL-PvdA 13.9%"
+  ],
+  "Haaksbergen": [
+    "CDA 18.4%",
+    "PVV 17.7%",
+    "VVD 16.6%"
+  ],
+  "Hardenberg": [
+    "CDA 19.5%",
+    "PVV 19.1%",
+    "VVD 12.2%"
+  ],
+  "Hellendoorn": [
+    "CDA 23.2%",
+    "PVV 15.9%",
+    "VVD 13.8%"
+  ],
+  "Hengelo (O)": [
+    "D66 17.3%",
+    "PVV 16.3%",
+    "CDA 13.8%"
+  ],
+  "Kampen": [
+    "CDA 17.0%",
+    "PVV 16.8%",
+    "Staatkundig Gereformeerde Partij (SGP) 11.5%"
+  ],
+  "Losser": [
+    "PVV 22.2%",
+    "CDA 17.4%",
+    "VVD 16.2%"
+  ],
+  "Noordoostpolder": [
+    "CDA 17.4%",
+    "PVV 17.2%",
+    "VVD 13.7%"
+  ],
+  "Oldenzaal": [
+    "CDA 17.2%",
+    "PVV 17.1%",
+    "VVD 17.0%"
+  ],
+  "Ommen": [
+    "CDA 22.1%",
+    "VVD 13.0%",
+    "PVV 12.7%"
+  ],
+  "Raalte": [
+    "CDA 22.2%",
+    "VVD 16.3%",
+    "D66 13.7%"
+  ],
+  "Staphorst": [
+    "Staatkundig Gereformeerde Partij (SGP) 32.9%",
+    "PVV 13.6%",
+    "CDA 12.4%"
+  ],
+  "Tubbergen": [
+    "CDA 22.6%",
+    "PVV 21.3%",
+    "VVD 15.8%"
+  ],
+  "Urk": [
+    "Staatkundig Gereformeerde Partij (SGP) 54.2%",
+    "PVV 17.3%",
+    "Forum voor Democratie 9.0%"
+  ],
+  "Wierden": [
+    "CDA 22.6%",
+    "VVD 16.7%",
+    "PVV 16.2%"
+  ],
+  "Zwolle": [
+    "PVV 16.3%",
+    "CDA 15.6%",
+    "D66 14.2%"
+  ],
+  "Aalten": [
+    "CDA 23.2%",
+    "PVV 14.9%",
+    "VVD 12.7%"
+  ],
+  "Apeldoorn": [
+    "D66 17.5%",
+    "PVV 15.0%",
+    "VVD 14.7%"
+  ],
+  "Arnhem": [
+    "D66 15.7%",
+    "PVV 15.2%",
+    "VVD 13.8%"
+  ],
+  "Barneveld": [
+    "Staatkundig Gereformeerde Partij (SGP) 24.8%",
+    "CDA 15.8%",
+    "PVV 14.2%"
+  ],
+  "Beuningen": [
+    "PVV 20.3%",
+    "D66 18.5%",
+    "VVD 18.4%"
+  ],
+  "Brummen": [
+    "PVV 17.6%",
+    "D66 16.3%",
+    "VVD 16.2%"
+  ],
+  "Buren": [
+    "PVV 23.3%",
+    "VVD 18.0%",
+    "D66 12.0%"
+  ],
+  "Culemborg": [
+    "GL-PvdA 19.4%",
+    "D66 18.4%",
+    "PVV 13.9%"
+  ],
+  "Doesburg": [
+    "PVV 19.1%",
+    "D66 16.7%",
+    "GL-PvdA 14.6%"
+  ],
+  "Doetinchem": [
+    "PVV 18.3%",
+    "D66 16.8%",
+    "VVD 15.5%"
+  ],
+  "Druten": [
+    "PVV 22.1%",
+    "VVD 18.4%",
+    "D66 16.5%"
+  ],
+  "Duiven": [
+    "VVD 18.6%",
+    "D66 18.5%",
+    "PVV 18.2%"
+  ],
+  "Ede": [
+    "CDA 14.0%",
+    "Staatkundig Gereformeerde Partij (SGP) 13.2%",
+    "D66 12.9%"
+  ],
+  "Elburg": [
+    "CDA 17.6%",
+    "PVV 17.2%",
+    "Staatkundig Gereformeerde Partij (SGP) 15.3%"
+  ],
+  "Epe": [
+    "PVV 18.0%",
+    "VVD 16.4%",
+    "CDA 14.2%"
+  ],
+  "Ermelo": [
+    "CDA 19.9%",
+    "VVD 12.6%",
+    "PVV 12.6%"
+  ],
+  "Harderwijk": [
+    "CDA 16.6%",
+    "VVD 14.8%",
+    "D66 14.5%"
+  ],
+  "Hattem": [
+    "CDA 18.9%",
+    "D66 14.5%",
+    "VVD 13.0%"
+  ],
+  "Heerde": [
+    "CDA 19.8%",
+    "PVV 18.1%",
+    "VVD 12.3%"
+  ],
+  "Heumen": [
+    "D66 22.0%",
+    "GL-PvdA 16.8%",
+    "VVD 16.4%"
+  ],
+  "Lochem": [
+    "D66 19.3%",
+    "VVD 16.5%",
+    "CDA 14.3%"
+  ],
+  "Maasdriel": [
+    "PVV 27.0%",
+    "VVD 19.2%",
+    "CDA 12.1%"
+  ],
+  "Nijkerk": [
+    "PVV 17.3%",
+    "CDA 17.3%",
+    "VVD 13.9%"
+  ],
+  "Nijmegen": [
+    "D66 19.3%",
+    "GL-PvdA 16.9%",
+    "PVV 16.4%"
+  ],
+  "Oldebroek": [
+    "PVV 20.6%",
+    "CDA 17.7%",
+    "Staatkundig Gereformeerde Partij (SGP) 15.0%"
+  ],
+  "Putten": [
+    "CDA 18.5%",
+    "PVV 17.5%",
+    "VVD 13.3%"
+  ],
+  "Renkum": [
+    "D66 21.7%",
+    "GL-PvdA 20.0%",
+    "VVD 14.5%"
+  ],
+  "Rheden": [
+    "D66 19.4%",
+    "GL-PvdA 16.9%",
+    "PVV 15.5%"
+  ],
+  "Rozendaal": [
+    "D66 29.1%",
+    "VVD 26.2%",
+    "GL-PvdA 12.4%"
+  ],
+  "Scherpenzeel": [
+    "Staatkundig Gereformeerde Partij (SGP) 21.7%",
+    "PVV 15.7%",
+    "CDA 13.7%"
+  ],
+  "Tiel": [
+    "PVV 23.0%",
+    "VVD 15.8%",
+    "D66 14.7%"
+  ],
+  "Voorst": [
+    "VVD 17.4%",
+    "CDA 16.4%",
+    "D66 16.0%"
+  ],
+  "Wageningen": [
+    "GL-PvdA 28.9%",
+    "D66 23.2%",
+    "CDA 8.7%"
+  ],
+  "Westervoort": [
+    "PVV 21.0%",
+    "D66 17.2%",
+    "VVD 14.4%"
+  ],
+  "Winterswijk": [
+    "VVD 16.4%",
+    "D66 15.7%",
+    "CDA 14.3%"
+  ],
+  "Wijchen": [
+    "PVV 19.4%",
+    "D66 19.1%",
+    "VVD 18.0%"
+  ],
+  "Zaltbommel": [
+    "PVV 17.3%",
+    "Staatkundig Gereformeerde Partij (SGP) 15.0%",
+    "D66 12.5%"
+  ],
+  "Zevenaar": [
+    "PVV 21.1%",
+    "VVD 16.7%",
+    "D66 16.1%"
+  ],
+  "Zutphen": [
+    "GL-PvdA 19.8%",
+    "D66 19.8%",
+    "PVV 13.6%"
+  ],
+  "Nunspeet": [
+    "Staatkundig Gereformeerde Partij (SGP) 25.0%",
+    "PVV 14.3%",
+    "CDA 14.2%"
+  ],
+  "Dronten": [
+    "PVV 17.5%",
+    "VVD 15.8%",
+    "CDA 15.4%"
+  ],
+  "Amersfoort": [
+    "D66 21.9%",
+    "GL-PvdA 17.0%",
+    "VVD 12.6%"
+  ],
+  "Baarn": [
+    "D66 22.2%",
+    "VVD 18.1%",
+    "GL-PvdA 13.9%"
+  ],
+  "De Bilt": [
+    "D66 23.8%",
+    "GL-PvdA 17.6%",
+    "VVD 16.6%"
+  ],
+  "Bunnik": [
+    "D66 23.1%",
+    "GL-PvdA 19.9%",
+    "CDA 14.4%"
+  ],
+  "Bunschoten": [
+    "PVV 21.4%",
+    "CDA 19.1%",
+    "ChristenUnie 10.8%"
+  ],
+  "Eemnes": [
+    "VVD 21.0%",
+    "D66 17.6%",
+    "PVV 14.5%"
+  ],
+  "Houten": [
+    "D66 21.3%",
+    "VVD 15.3%",
+    "GL-PvdA 14.7%"
+  ],
+  "Leusden": [
+    "D66 21.3%",
+    "VVD 16.4%",
+    "CDA 14.9%"
+  ],
+  "Lopik": [
+    "PVV 20.8%",
+    "CDA 16.9%",
+    "VVD 13.9%"
+  ],
+  "Montfoort": [
+    "VVD 17.7%",
+    "CDA 15.8%",
+    "PVV 15.1%"
+  ],
+  "Renswoude": [
+    "Staatkundig Gereformeerde Partij (SGP) 22.3%",
+    "PVV 16.2%",
+    "CDA 14.2%"
+  ],
+  "Rhenen": [
+    "PVV 17.5%",
+    "Staatkundig Gereformeerde Partij (SGP) 15.6%",
+    "VVD 13.1%"
+  ],
+  "Soest": [
+    "D66 20.3%",
+    "VVD 18.1%",
+    "PVV 12.8%"
+  ],
+  "Utrecht": [
+    "D66 20.8%",
+    "GL-PvdA 16.4%",
+    "VVD 13.4%"
+  ],
+  "Veenendaal": [
+    "PVV 15.4%",
+    "CDA 15.3%",
+    "VVD 12.8%"
+  ],
+  "Woudenberg": [
+    "Staatkundig Gereformeerde Partij (SGP) 19.7%",
+    "CDA 14.9%",
+    "VVD 12.7%"
+  ],
+  "Wijk bij Duurstede": [
+    "PVV 17.6%",
+    "D66 17.2%",
+    "VVD 16.5%"
+  ],
+  "IJsselstein": [
+    "D66 19.5%",
+    "VVD 18.8%",
+    "PVV 15.8%"
+  ],
+  "Zeist": [
+    "D66 23.9%",
+    "GL-PvdA 17.3%",
+    "VVD 15.5%"
+  ],
+  "Nieuwegein": [
+    "PVV 19.5%",
+    "D66 17.2%",
+    "VVD 13.7%"
+  ],
+  "Aalsmeer": [
+    "VVD 23.0%",
+    "PVV 16.3%",
+    "D66 16.0%"
+  ],
+  "Alkmaar": [
+    "D66 20.8%",
+    "GL-PvdA 16.3%",
+    "VVD 14.4%"
+  ],
+  "Amstelveen": [
+    "D66 23.9%",
+    "VVD 19.3%",
+    "GL-PvdA 16.6%"
+  ],
+  "Amsterdam": [
+    "GL-PvdA 27.1%",
+    "D66 23.9%",
+    "VVD 9.7%"
+  ],
+  "Bergen (NH)": [
+    "VVD 19.7%",
+    "D66 19.6%",
+    "GL-PvdA 14.7%"
+  ],
+  "Beverwijk": [
+    "PVV 20.6%",
+    "D66 16.7%",
+    "VVD 15.0%"
+  ],
+  "Blaricum": [
+    "VVD 31.9%",
+    "D66 19.5%",
+    "PVV 10.5%"
+  ],
+  "Bloemendaal": [
+    "D66 28.5%",
+    "VVD 26.4%",
+    "GL-PvdA 13.3%"
+  ],
+  "Castricum": [
+    "D66 21.5%",
+    "VVD 18.2%",
+    "GL-PvdA 16.2%"
+  ],
+  "Diemen": [
+    "GL-PvdA 23.0%",
+    "D66 20.2%",
+    "VVD 13.0%"
+  ],
+  "Edam-Volendam": [
+    "PVV 28.5%",
+    "VVD 16.6%",
+    "BBB 11.4%"
+  ],
+  "Enkhuizen": [
+    "D66 17.8%",
+    "PVV 17.0%",
+    "VVD 14.8%"
+  ],
+  "Haarlem": [
+    "D66 21.9%",
+    "VVD 17.6%",
+    "GL-PvdA 14.6%"
+  ],
+  "Haarlemmermeer": [
+    "VVD 20.0%",
+    "D66 17.6%",
+    "PVV 17.2%"
+  ],
+  "Heemskerk": [
+    "D66 18.4%",
+    "PVV 18.2%",
+    "VVD 15.6%"
+  ],
+  "Heemstede": [
+    "D66 29.5%",
+    "VVD 23.4%",
+    "GL-PvdA 14.1%"
+  ],
+  "Heiloo": [
+    "D66 23.9%",
+    "VVD 19.3%",
+    "GL-PvdA 15.8%"
+  ],
+  "Den Helder": [
+    "PVV 17.4%",
+    "D66 16.9%",
+    "VVD 16.6%"
+  ],
+  "Hilversum": [
+    "D66 24.3%",
+    "GL-PvdA 17.4%",
+    "VVD 14.3%"
+  ],
+  "Hoorn": [
+    "D66 19.6%",
+    "PVV 15.7%",
+    "VVD 15.5%"
+  ],
+  "Huizen": [
+    "VVD 19.4%",
+    "D66 18.1%",
+    "CDA 13.6%"
+  ],
+  "Landsmeer": [
+    "VVD 18.3%",
+    "D66 18.2%",
+    "PVV 17.1%"
+  ],
+  "Laren": [
+    "VVD 38.1%",
+    "D66 19.9%",
+    "CDA 10.8%"
+  ],
+  "Medemblik": [
+    "VVD 17.7%",
+    "PVV 17.6%",
+    "CDA 14.5%"
+  ],
+  "Oostzaan": [
+    "PVV 21.1%",
+    "VVD 19.0%",
+    "D66 15.8%"
+  ],
+  "Opmeer": [
+    "VVD 18.0%",
+    "PVV 16.8%",
+    "D66 15.7%"
+  ],
+  "Ouder-Amstel": [
+    "D66 24.8%",
+    "GL-PvdA 17.8%",
+    "VVD 17.6%"
+  ],
+  "Purmerend": [
+    "PVV 23.5%",
+    "VVD 16.9%",
+    "D66 15.3%"
+  ],
+  "Schagen": [
+    "VVD 19.0%",
+    "D66 16.8%",
+    "PVV 15.2%"
+  ],
+  "Texel": [
+    "VVD 16.0%",
+    "GL-PvdA 15.4%",
+    "D66 14.5%"
+  ],
+  "Uitgeest": [
+    "D66 20.4%",
+    "VVD 19.1%",
+    "PVV 14.4%"
+  ],
+  "Uithoorn": [
+    "VVD 18.6%",
+    "D66 18.3%",
+    "PVV 17.8%"
+  ],
+  "Velsen": [
+    "PVV 21.1%",
+    "D66 17.6%",
+    "VVD 15.9%"
+  ],
+  "Zandvoort": [
+    "VVD 23.1%",
+    "PVV 20.3%",
+    "D66 16.7%"
+  ],
+  "Zaanstad": [
+    "PVV 18.2%",
+    "D66 16.8%",
+    "GL-PvdA 15.2%"
+  ],
+  "Alblasserdam": [
+    "Staatkundig Gereformeerde Partij (SGP) 18.0%",
+    "PVV 17.8%",
+    "CDA 12.7%"
+  ],
+  "Alphen aan den Rijn": [
+    "D66 17.4%",
+    "VVD 15.9%",
+    "PVV 15.3%"
+  ],
+  "Barendrecht": [
+    "PVV 17.4%",
+    "VVD 16.0%",
+    "D66 14.8%"
+  ],
+  "Drechterland": [
+    "VVD 18.9%",
+    "D66 15.7%",
+    "PVV 14.9%"
+  ],
+  "Capelle aan den IJssel": [
+    "PVV 17.7%",
+    "D66 15.5%",
+    "VVD 12.4%"
+  ],
+  "Delft": [
+    "D66 25.3%",
+    "GL-PvdA 20.2%",
+    "PVV 12.0%"
+  ],
+  "Dordrecht": [
+    "PVV 19.1%",
+    "D66 14.0%",
+    "VVD 13.9%"
+  ],
+  "Gorinchem": [
+    "D66 16.6%",
+    "PVV 16.0%",
+    "VVD 14.9%"
+  ],
+  "Gouda": [
+    "D66 18.0%",
+    "GL-PvdA 16.1%",
+    "PVV 13.0%"
+  ],
+  "'s-Gravenhage": [
+    "D66 19.7%",
+    "GL-PvdA 18.9%",
+    "PVV 14.4%"
+  ],
+  "Hardinxveld-Giessendam": [
+    "Staatkundig Gereformeerde Partij (SGP) 21.6%",
+    "CDA 15.7%",
+    "PVV 14.8%"
+  ],
+  "Hendrik-Ido-Ambacht": [
+    "PVV 18.2%",
+    "VVD 14.9%",
+    "CDA 12.9%"
+  ],
+  "Stede Broec": [
+    "PVV 20.7%",
+    "VVD 17.0%",
+    "D66 14.5%"
+  ],
+  "Hillegom": [
+    "VVD 18.4%",
+    "D66 18.1%",
+    "PVV 16.6%"
+  ],
+  "Katwijk": [
+    "PVV 22.0%",
+    "CDA 16.6%",
+    "VVD 13.2%"
+  ],
+  "Krimpen aan den IJssel": [
+    "PVV 17.2%",
+    "Staatkundig Gereformeerde Partij (SGP) 13.9%",
+    "VVD 12.3%"
+  ],
+  "Leiden": [
+    "D66 18.2%",
+    "VVD 15.3%",
+    "PVV 15.1%"
+  ],
+  "Leiderdorp": [
+    "D66 21.7%",
+    "VVD 15.3%",
+    "GL-PvdA 15.3%"
+  ],
+  "Lisse": [
+    "VVD 18.7%",
+    "D66 16.7%",
+    "PVV 15.8%"
+  ],
+  "Maassluis": [
+    "PVV 18.5%",
+    "VVD 15.1%",
+    "D66 14.1%"
+  ],
+  "Nieuwkoop": [
+    "VVD 19.0%",
+    "PVV 17.5%",
+    "CDA 16.2%"
+  ],
+  "Noordwijk": [
+    "VVD 22.8%",
+    "D66 16.9%",
+    "PVV 16.2%"
+  ],
+  "Oegstgeest": [
+    "D66 27.1%",
+    "VVD 18.0%",
+    "GL-PvdA 17.4%"
+  ],
+  "Oudewater": [
+    "VVD 17.7%",
+    "CDA 17.3%",
+    "PVV 15.2%"
+  ],
+  "Papendrecht": [
+    "PVV 19.2%",
+    "VVD 14.7%",
+    "CDA 13.6%"
+  ],
+  "Ridderkerk": [
+    "PVV 22.4%",
+    "CDA 12.6%",
+    "VVD 11.6%"
+  ],
+  "Rotterdam": [
+    "D66 18.0%",
+    "GL-PvdA 17.1%",
+    "PVV 14.9%"
+  ],
+  "Rijswijk": [
+    "D66 19.4%",
+    "PVV 17.9%",
+    "GL-PvdA 14.3%"
+  ],
+  "Schiedam": [
+    "PVV 20.3%",
+    "D66 14.5%",
+    "GL-PvdA 13.2%"
+  ],
+  "Sliedrecht": [
+    "PVV 17.9%",
+    "Staatkundig Gereformeerde Partij (SGP) 15.9%",
+    "CDA 12.8%"
+  ],
+  "Albrandswaard": [
+    "VVD 18.5%",
+    "PVV 18.5%",
+    "D66 15.5%"
+  ],
+  "Vlaardingen": [
+    "PVV 20.9%",
+    "D66 14.8%",
+    "VVD 12.3%"
+  ],
+  "Voorschoten": [
+    "D66 23.5%",
+    "VVD 18.6%",
+    "GL-PvdA 14.7%"
+  ],
+  "Waddinxveen": [
+    "PVV 16.7%",
+    "VVD 14.6%",
+    "D66 13.7%"
+  ],
+  "Wassenaar": [
+    "VVD 28.8%",
+    "D66 18.8%",
+    "PVV 13.3%"
+  ],
+  "Woerden": [
+    "D66 18.3%",
+    "CDA 16.2%",
+    "VVD 15.6%"
+  ],
+  "Zoetermeer": [
+    "PVV 19.7%",
+    "D66 17.1%",
+    "VVD 14.8%"
+  ],
+  "Zoeterwoude": [
+    "D66 20.0%",
+    "PVV 14.7%",
+    "VVD 14.5%"
+  ],
+  "Zwijndrecht": [
+    "PVV 21.2%",
+    "VVD 13.4%",
+    "CDA 12.8%"
+  ],
+  "Borsele": [
+    "Staatkundig Gereformeerde Partij (SGP) 16.9%",
+    "PVV 16.6%",
+    "CDA 14.0%"
+  ],
+  "Goes": [
+    "PVV 14.8%",
+    "D66 14.6%",
+    "VVD 14.3%"
+  ],
+  "West Maas en Waal": [
+    "PVV 23.6%",
+    "VVD 19.0%",
+    "CDA 13.6%"
+  ],
+  "Hulst": [
+    "PVV 24.0%",
+    "CDA 15.7%",
+    "VVD 15.4%"
+  ],
+  "Kapelle": [
+    "CDA 16.4%",
+    "PVV 14.0%",
+    "VVD 13.9%"
+  ],
+  "Middelburg": [
+    "PVV 17.3%",
+    "VVD 13.5%",
+    "CDA 13.3%"
+  ],
+  "Reimerswaal": [
+    "Staatkundig Gereformeerde Partij (SGP) 36.2%",
+    "PVV 17.3%",
+    "CDA 9.9%"
+  ],
+  "Terneuzen": [
+    "PVV 23.0%",
+    "CDA 13.1%",
+    "VVD 13.0%"
+  ],
+  "Tholen": [
+    "Staatkundig Gereformeerde Partij (SGP) 24.8%",
+    "PVV 20.4%",
+    "VVD 11.0%"
+  ],
+  "Veere": [
+    "CDA 17.6%",
+    "VVD 15.5%",
+    "Staatkundig Gereformeerde Partij (SGP) 15.2%"
+  ],
+  "Vlissingen": [
+    "PVV 19.8%",
+    "D66 14.9%",
+    "VVD 13.6%"
+  ],
+  "De Ronde Venen": [
+    "VVD 21.8%",
+    "D66 17.4%",
+    "PVV 15.5%"
+  ],
+  "Tytsjerksteradiel": [
+    "CDA 19.5%",
+    "PVV 17.1%",
+    "D66 11.4%"
+  ],
+  "Asten": [
+    "VVD 19.5%",
+    "PVV 17.8%",
+    "CDA 17.3%"
+  ],
+  "Baarle-Nassau": [
+    "PVV 22.6%",
+    "VVD 17.0%",
+    "CDA 13.6%"
+  ],
+  "Bergen op Zoom": [
+    "PVV 21.2%",
+    "VVD 16.7%",
+    "D66 16.5%"
+  ],
+  "Best": [
+    "D66 19.5%",
+    "VVD 18.1%",
+    "PVV 17.6%"
+  ],
+  "Boekel": [
+    "PVV 21.9%",
+    "CDA 19.2%",
+    "VVD 16.8%"
+  ],
+  "Boxtel": [
+    "D66 19.2%",
+    "PVV 18.7%",
+    "VVD 15.0%"
+  ],
+  "Breda": [
+    "D66 23.9%",
+    "VVD 18.3%",
+    "GL-PvdA 13.3%"
+  ],
+  "Deurne": [
+    "PVV 21.8%",
+    "VVD 17.0%",
+    "CDA 15.7%"
+  ],
+  "Pekela": [
+    "PVV 36.0%",
+    "CDA 9.6%",
+    "VVD 9.3%"
+  ],
+  "Dongen": [
+    "PVV 19.8%",
+    "D66 17.8%",
+    "VVD 17.6%"
+  ],
+  "Eersel": [
+    "CDA 19.2%",
+    "VVD 18.6%",
+    "D66 17.1%"
+  ],
+  "Eindhoven": [
+    "D66 22.2%",
+    "GL-PvdA 17.3%",
+    "PVV 14.3%"
+  ],
+  "Etten-Leur": [
+    "PVV 20.6%",
+    "VVD 18.9%",
+    "D66 16.1%"
+  ],
+  "Geertruidenberg": [
+    "PVV 27.3%",
+    "VVD 17.0%",
+    "D66 13.5%"
+  ],
+  "Gilze en Rijen": [
+    "PVV 19.8%",
+    "D66 17.2%",
+    "VVD 15.9%"
+  ],
+  "Goirle": [
+    "D66 20.4%",
+    "VVD 17.7%",
+    "PVV 17.1%"
+  ],
+  "Helmond": [
+    "PVV 24.9%",
+    "VVD 15.7%",
+    "D66 15.4%"
+  ],
+  "'s-Hertogenbosch": [
+    "PVV 18.5%",
+    "D66 18.5%",
+    "VVD 16.3%"
+  ],
+  "Heusden": [
+    "PVV 20.9%",
+    "VVD 18.5%",
+    "D66 16.9%"
+  ],
+  "Hilvarenbeek": [
+    "VVD 19.9%",
+    "D66 17.7%",
+    "CDA 17.6%"
+  ],
+  "Loon op Zand": [
+    "PVV 23.5%",
+    "VVD 19.7%",
+    "D66 14.5%"
+  ],
+  "Nuenen, Gerwen en Nederwetten": [
+    "D66 22.4%",
+    "VVD 18.9%",
+    "CDA 15.7%"
+  ],
+  "Oirschot": [
+    "PVV 19.1%",
+    "CDA 18.3%",
+    "VVD 17.7%"
+  ],
+  "Oisterwijk": [
+    "VVD 23.0%",
+    "D66 19.1%",
+    "CDA 15.0%"
+  ],
+  "Oosterhout": [
+    "PVV 20.5%",
+    "VVD 18.7%",
+    "D66 17.6%"
+  ],
+  "Oss": [
+    "PVV 23.9%",
+    "D66 15.4%",
+    "VVD 15.3%"
+  ],
+  "Rucphen": [
+    "PVV 46.2%",
+    "VVD 14.4%",
+    "CDA 8.9%"
+  ],
+  "Sint-Michielsgestel": [
+    "D66 20.5%",
+    "PVV 18.2%",
+    "VVD 17.0%"
+  ],
+  "Someren": [
+    "PVV 21.4%",
+    "VVD 19.7%",
+    "CDA 16.7%"
+  ],
+  "Son en Breugel": [
+    "D66 20.4%",
+    "VVD 19.9%",
+    "CDA 15.3%"
+  ],
+  "Steenbergen": [
+    "PVV 28.7%",
+    "VVD 17.0%",
+    "D66 11.4%"
+  ],
+  "Waterland": [
+    "D66 17.8%",
+    "VVD 16.8%",
+    "GL-PvdA 16.3%"
+  ],
+  "Tilburg": [
+    "PVV 19.5%",
+    "D66 17.5%",
+    "VVD 16.8%"
+  ],
+  "Valkenswaard": [
+    "PVV 21.2%",
+    "VVD 17.8%",
+    "D66 16.6%"
+  ],
+  "Veldhoven": [
+    "VVD 18.8%",
+    "PVV 18.5%",
+    "D66 18.3%"
+  ],
+  "Vught": [
+    "D66 24.7%",
+    "VVD 20.1%",
+    "CDA 13.3%"
+  ],
+  "Waalre": [
+    "D66 23.8%",
+    "VVD 20.0%",
+    "CDA 14.6%"
+  ],
+  "Waalwijk": [
+    "PVV 22.8%",
+    "VVD 17.6%",
+    "D66 14.3%"
+  ],
+  "Woensdrecht": [
+    "PVV 26.8%",
+    "VVD 18.7%",
+    "D66 13.2%"
+  ],
+  "Zundert": [
+    "PVV 21.0%",
+    "VVD 19.7%",
+    "CDA 15.2%"
+  ],
+  "Wormerland": [
+    "D66 18.5%",
+    "VVD 17.2%",
+    "PVV 16.2%"
+  ],
+  "Landgraaf": [
+    "PVV 34.7%",
+    "VVD 11.9%",
+    "D66 10.7%"
+  ],
+  "Beek": [
+    "PVV 24.5%",
+    "CDA 16.3%",
+    "VVD 15.1%"
+  ],
+  "Beesel": [
+    "PVV 29.0%",
+    "CDA 14.8%",
+    "VVD 13.5%"
+  ],
+  "Bergen (L)": [
+    "PVV 28.9%",
+    "VVD 14.8%",
+    "CDA 14.3%"
+  ],
+  "Brunssum": [
+    "PVV 34.1%",
+    "VVD 11.3%",
+    "D66 10.0%"
+  ],
+  "Gennep": [
+    "PVV 20.8%",
+    "D66 16.4%",
+    "VVD 15.4%"
+  ],
+  "Heerlen": [
+    "PVV 30.0%",
+    "GL-PvdA 13.1%",
+    "D66 11.8%"
+  ],
+  "Kerkrade": [
+    "PVV 37.4%",
+    "VVD 10.6%",
+    "GL-PvdA 9.9%"
+  ],
+  "Maastricht": [
+    "PVV 25.4%",
+    "D66 14.2%",
+    "VVD 14.0%"
+  ],
+  "Meerssen": [
+    "PVV 22.2%",
+    "VVD 16.4%",
+    "D66 15.8%"
+  ],
+  "Mook en Middelaar": [
+    "D66 22.7%",
+    "GL-PvdA 19.3%",
+    "VVD 17.1%"
+  ],
+  "Nederweert": [
+    "PVV 24.5%",
+    "CDA 17.2%",
+    "VVD 16.2%"
+  ],
+  "Roermond": [
+    "PVV 23.9%",
+    "D66 15.6%",
+    "VVD 14.6%"
+  ],
+  "Simpelveld": [
+    "PVV 30.7%",
+    "CDA 14.5%",
+    "VVD 12.4%"
+  ],
+  "Stein": [
+    "PVV 29.6%",
+    "VVD 13.1%",
+    "CDA 13.1%"
+  ],
+  "Vaals": [
+    "PVV 24.8%",
+    "GL-PvdA 13.9%",
+    "D66 13.2%"
+  ],
+  "Venlo": [
+    "PVV 27.6%",
+    "D66 14.4%",
+    "VVD 14.1%"
+  ],
+  "Venray": [
+    "PVV 20.1%",
+    "VVD 16.1%",
+    "D66 15.7%"
+  ],
+  "Voerendaal": [
+    "PVV 21.2%",
+    "D66 15.6%",
+    "CDA 15.3%"
+  ],
+  "Weert": [
+    "PVV 22.2%",
+    "VVD 17.2%",
+    "D66 14.0%"
+  ],
+  "Valkenburg aan de Geul": [
+    "PVV 22.2%",
+    "VVD 16.3%",
+    "CDA 14.6%"
+  ],
+  "Lelystad": [
+    "PVV 19.3%",
+    "D66 13.9%",
+    "VVD 13.7%"
+  ],
+  "Horst aan de Maas": [
+    "PVV 20.4%",
+    "CDA 17.8%",
+    "VVD 16.4%"
+  ],
+  "Oude IJsselstreek": [
+    "PVV 18.4%",
+    "CDA 16.5%",
+    "VVD 15.6%"
+  ],
+  "Teylingen": [
+    "D66 21.1%",
+    "VVD 19.7%",
+    "CDA 14.0%"
+  ],
+  "Utrechtse Heuvelrug": [
+    "D66 21.8%",
+    "GL-PvdA 15.6%",
+    "VVD 15.4%"
+  ],
+  "Oost Gelre": [
+    "CDA 20.3%",
+    "VVD 17.2%",
+    "D66 14.7%"
+  ],
+  "Koggenland": [
+    "VVD 19.7%",
+    "CDA 14.8%",
+    "PVV 14.8%"
+  ],
+  "Lansingerland": [
+    "VVD 18.8%",
+    "D66 18.0%",
+    "CDA 15.3%"
+  ],
+  "Leudal": [
+    "PVV 24.1%",
+    "CDA 16.1%",
+    "VVD 15.5%"
+  ],
+  "Maasgouw": [
+    "PVV 26.6%",
+    "VVD 16.2%",
+    "CDA 14.7%"
+  ],
+  "Gemert-Bakel": [
+    "PVV 21.9%",
+    "CDA 19.0%",
+    "VVD 15.2%"
+  ],
+  "Halderberge": [
+    "PVV 25.1%",
+    "VVD 20.4%",
+    "CDA 12.8%"
+  ],
+  "Heeze-Leende": [
+    "VVD 18.6%",
+    "D66 18.1%",
+    "CDA 17.5%"
+  ],
+  "Laarbeek": [
+    "PVV 22.5%",
+    "CDA 16.2%",
+    "VVD 16.1%"
+  ],
+  "Reusel-De Mierden": [
+    "PVV 21.4%",
+    "CDA 19.3%",
+    "VVD 17.0%"
+  ],
+  "Roerdalen": [
+    "PVV 30.7%",
+    "VVD 13.6%",
+    "CDA 13.3%"
+  ],
+  "Roosendaal": [
+    "PVV 21.5%",
+    "VVD 17.6%",
+    "D66 14.9%"
+  ],
+  "Schouwen-Duiveland": [
+    "PVV 16.6%",
+    "VVD 16.1%",
+    "CDA 13.8%"
+  ],
+  "Aa en Hunze": [
+    "VVD 18.7%",
+    "D66 17.4%",
+    "GL-PvdA 15.0%"
+  ],
+  "Borger-Odoorn": [
+    "PVV 20.4%",
+    "VVD 15.3%",
+    "D66 12.7%"
+  ],
+  "De Wolden": [
+    "VVD 17.4%",
+    "PVV 16.6%",
+    "CDA 14.1%"
+  ],
+  "Noord-Beveland": [
+    "PVV 19.2%",
+    "VVD 16.2%",
+    "CDA 14.4%"
+  ],
+  "Wijdemeren": [
+    "VVD 22.5%",
+    "D66 18.4%",
+    "PVV 14.3%"
+  ],
+  "Noordenveld": [
+    "D66 18.2%",
+    "GL-PvdA 16.0%",
+    "VVD 15.7%"
+  ],
+  "Twenterand": [
+    "PVV 25.3%",
+    "CDA 20.5%",
+    "VVD 10.2%"
+  ],
+  "Westerveld": [
+    "VVD 16.1%",
+    "PVV 14.5%",
+    "GL-PvdA 14.3%"
+  ],
+  "Lingewaard": [
+    "D66 19.8%",
+    "VVD 19.2%",
+    "PVV 17.5%"
+  ],
+  "Cranendonck": [
+    "PVV 23.3%",
+    "VVD 18.5%",
+    "CDA 15.3%"
+  ],
+  "Steenwijkerland": [
+    "PVV 18.9%",
+    "VVD 14.7%",
+    "CDA 14.4%"
+  ],
+  "Moerdijk": [
+    "PVV 24.0%",
+    "VVD 16.6%",
+    "CDA 14.2%"
+  ],
+  "Echt-Susteren": [
+    "PVV 30.0%",
+    "CDA 14.7%",
+    "VVD 13.6%"
+  ],
+  "Sluis": [
+    "PVV 21.1%",
+    "VVD 18.5%",
+    "CDA 12.6%"
+  ],
+  "Drimmelen": [
+    "PVV 23.1%",
+    "VVD 18.8%",
+    "D66 15.0%"
+  ],
+  "Bernheze": [
+    "PVV 19.2%",
+    "VVD 18.6%",
+    "CDA 17.4%"
+  ],
+  "Alphen-Chaam": [
+    "VVD 22.5%",
+    "PVV 16.4%",
+    "CDA 15.9%"
+  ],
+  "Bergeijk": [
+    "PVV 19.0%",
+    "VVD 18.6%",
+    "CDA 18.3%"
+  ],
+  "Bladel": [
+    "PVV 20.4%",
+    "CDA 20.2%",
+    "VVD 16.5%"
+  ],
+  "Gulpen-Wittem": [
+    "PVV 21.4%",
+    "CDA 15.3%",
+    "VVD 13.8%"
+  ],
+  "Tynaarlo": [
+    "D66 22.6%",
+    "GL-PvdA 17.9%",
+    "VVD 16.7%"
+  ],
+  "Midden-Drenthe": [
+    "PVV 16.7%",
+    "VVD 15.0%",
+    "CDA 14.2%"
+  ],
+  "Overbetuwe": [
+    "D66 19.2%",
+    "VVD 17.1%",
+    "PVV 16.6%"
+  ],
+  "Hof van Twente": [
+    "CDA 17.8%",
+    "VVD 17.7%",
+    "PVV 15.4%"
+  ],
+  "Neder-Betuwe": [
+    "Staatkundig Gereformeerde Partij (SGP) 34.1%",
+    "PVV 19.7%",
+    "VVD 9.7%"
+  ],
+  "Rijssen-Holten": [
+    "Staatkundig Gereformeerde Partij (SGP) 23.6%",
+    "CDA 16.0%",
+    "PVV 14.8%"
+  ],
+  "Geldrop-Mierlo": [
+    "PVV 19.8%",
+    "D66 18.6%",
+    "VVD 14.8%"
+  ],
+  "Olst-Wijhe": [
+    "CDA 15.6%",
+    "D66 15.0%",
+    "PVV 14.9%"
+  ],
+  "Dinkelland": [
+    "CDA 22.6%",
+    "VVD 18.2%",
+    "PVV 17.7%"
+  ],
+  "Westland": [
+    "PVV 21.2%",
+    "VVD 19.2%",
+    "CDA 16.3%"
+  ],
+  "Midden-Delfland": [
+    "CDA 18.8%",
+    "D66 18.3%",
+    "VVD 18.0%"
+  ],
+  "Berkelland": [
+    "CDA 15.9%",
+    "PVV 15.6%",
+    "VVD 15.3%"
+  ],
+  "Bronckhorst": [
+    "CDA 16.9%",
+    "VVD 16.7%",
+    "PVV 14.8%"
+  ],
+  "Sittard-Geleen": [
+    "PVV 26.3%",
+    "D66 14.3%",
+    "CDA 14.2%"
+  ],
+  "Kaag en Braassem": [
+    "VVD 19.5%",
+    "PVV 17.2%",
+    "D66 16.7%"
+  ],
+  "Dantumadiel": [
+    "PVV 21.4%",
+    "CDA 19.0%",
+    "Forum voor Democratie 8.7%"
+  ],
+  "Zuidplas": [
+    "PVV 16.4%",
+    "VVD 16.1%",
+    "D66 14.5%"
+  ],
+  "Peel en Maas": [
+    "PVV 25.1%",
+    "CDA 17.2%",
+    "VVD 16.3%"
+  ],
+  "Oldambt": [
+    "PVV 27.2%",
+    "VVD 13.0%",
+    "GL-PvdA 11.7%"
+  ],
+  "Zwartewaterland": [
+    "Staatkundig Gereformeerde Partij (SGP) 22.4%",
+    "PVV 16.3%",
+    "CDA 15.9%"
+  ],
+  "Súdwest-Fryslân": [
+    "CDA 17.4%",
+    "PVV 15.6%",
+    "D66 13.3%"
+  ],
+  "Bodegraven-Reeuwijk": [
+    "VVD 16.5%",
+    "CDA 15.7%",
+    "PVV 14.0%"
+  ],
+  "Eijsden-Margraten": [
+    "PVV 18.3%",
+    "CDA 17.6%",
+    "VVD 16.5%"
+  ],
+  "Stichtse Vecht": [
+    "D66 19.4%",
+    "VVD 18.2%",
+    "PVV 16.0%"
+  ],
+  "Hollands Kroon": [
+    "PVV 19.8%",
+    "VVD 18.0%",
+    "D66 12.7%"
+  ],
+  "Leidschendam-Voorburg": [
+    "D66 23.2%",
+    "VVD 17.6%",
+    "GL-PvdA 13.4%"
+  ],
+  "Goeree-Overflakkee": [
+    "PVV 21.1%",
+    "Staatkundig Gereformeerde Partij (SGP) 15.4%",
+    "CDA 12.5%"
+  ],
+  "Pijnacker-Nootdorp": [
+    "D66 20.1%",
+    "VVD 17.6%",
+    "PVV 15.6%"
+  ],
+  "Nissewaard": [
+    "PVV 27.9%",
+    "VVD 13.4%",
+    "D66 11.8%"
+  ],
+  "Krimpenerwaard": [
+    "PVV 15.6%",
+    "VVD 14.6%",
+    "CDA 13.8%"
+  ],
+  "De Fryske Marren": [
+    "CDA 18.4%",
+    "PVV 16.9%",
+    "VVD 14.5%"
+  ],
+  "Gooise Meren": [
+    "D66 28.1%",
+    "VVD 21.8%",
+    "GL-PvdA 13.4%"
+  ],
+  "Berg en Dal": [
+    "PVV 20.8%",
+    "D66 18.1%",
+    "VVD 14.8%"
+  ],
+  "Meierijstad": [
+    "PVV 20.1%",
+    "VVD 17.2%",
+    "D66 16.9%"
+  ],
+  "Waadhoeke": [
+    "CDA 17.2%",
+    "PVV 17.2%",
+    "VVD 12.1%"
+  ],
+  "Westerwolde": [
+    "PVV 27.0%",
+    "VVD 12.0%",
+    "CDA 11.3%"
+  ],
+  "Midden-Groningen": [
+    "PVV 22.7%",
+    "VVD 13.0%",
+    "D66 12.9%"
+  ],
+  "Beekdaelen": [
+    "PVV 25.6%",
+    "CDA 15.2%",
+    "VVD 14.4%"
+  ],
+  "Montferland": [
+    "PVV 24.2%",
+    "VVD 17.0%",
+    "CDA 14.5%"
+  ],
+  "Altena": [
+    "PVV 21.4%",
+    "CDA 16.4%",
+    "Staatkundig Gereformeerde Partij (SGP) 12.8%"
+  ],
+  "West Betuwe": [
+    "PVV 21.1%",
+    "VVD 15.7%",
+    "CDA 11.9%"
+  ],
+  "Vijfheerenlanden": [
+    "PVV 18.5%",
+    "CDA 14.7%",
+    "VVD 13.4%"
+  ],
+  "Hoeksche Waard": [
+    "PVV 18.6%",
+    "VVD 15.2%",
+    "CDA 13.4%"
+  ],
+  "Het Hogeland": [
+    "CDA 15.7%",
+    "PVV 15.6%",
+    "GL-PvdA 14.8%"
+  ],
+  "Westerkwartier": [
+    "CDA 16.8%",
+    "PVV 15.5%",
+    "D66 13.3%"
+  ],
+  "Noardeast-Fryslân": [
+    "CDA 20.7%",
+    "PVV 20.2%",
+    "VVD 9.4%"
+  ],
+  "Molenlanden": [
+    "Staatkundig Gereformeerde Partij (SGP) 18.4%",
+    "CDA 17.6%",
+    "PVV 14.7%"
+  ],
+  "Eemsdelta": [
+    "PVV 21.3%",
+    "CDA 13.6%",
+    "VVD 11.7%"
+  ],
+  "Dijk en Waard": [
+    "D66 17.9%",
+    "VVD 17.0%",
+    "PVV 16.1%"
+  ],
+  "Land van Cuijk": [
+    "PVV 18.4%",
+    "VVD 16.4%",
+    "CDA 16.3%"
+  ],
+  "Maashorst": [
+    "D66 19.8%",
+    "PVV 19.1%",
+    "VVD 17.9%"
+  ],
+  "Voorne aan Zee": [
+    "PVV 23.0%",
+    "VVD 18.0%",
+    "D66 13.0%"
+  ],
+  "NBSB": [
+    "GL-PvdA 29.1%",
+    "D66 18.6%",
+    "CDA 10.3%"
+  ],
+  "Bonaire": [
+    "D66 23.4%",
+    "ChristenUnie 14.5%",
+    "GL-PvdA 13.1%"
+  ],
+  "Sint Eustatius": [
+    "Nieuw Sociaal Contract (NSC) 31.6%",
+    "D66 21.8%",
+    "GL-PvdA 14.6%"
+  ],
+  "Saba": [
+    "D66 39.8%",
+    "GL-PvdA 26.3%",
+    "PVV 9.7%"
+  ],
+  "Fryslân": [
+    "PVV 17.3%",
+    "CDA 15.4%",
+    "D66 13.2%"
+  ],
+  "Drenthe": [
+    "PVV 18.9%",
+    "VVD 14.6%",
+    "D66 14.0%"
+  ],
+  "Overijssel": [
+    "PVV 16.6%",
+    "CDA 15.7%",
+    "D66 13.9%"
+  ],
+  "Flevoland": [
+    "PVV 19.1%",
+    "D66 13.9%",
+    "VVD 13.7%"
+  ],
+  "Gelderland": [
+    "D66 16.2%",
+    "PVV 15.9%",
+    "VVD 13.9%"
+  ],
+  "Noord-Holland": [
+    "D66 20.4%",
+    "GL-PvdA 16.7%",
+    "VVD 15.3%"
+  ],
+  "Zuid-Holland": [
+    "D66 16.7%",
+    "PVV 16.4%",
+    "VVD 13.7%"
+  ],
+  "Zeeland": [
+    "PVV 17.6%",
+    "VVD 13.6%",
+    "CDA 13.3%"
+  ],
+  "Noord-Brabant": [
+    "PVV 19.1%",
+    "D66 17.8%",
+    "VVD 16.7%"
+  ],
+  "Limburg": [
+    "PVV 25.6%",
+    "VVD 14.0%",
+    "D66 14.0%"
+  ],
+  "Niet-provinciaal ingedeeld": [
+    "D66 23.8%",
+    "ChristenUnie 13.9%",
+    "GL-PvdA 13.4%"
+  ],
+  "DEFAULT": [
+    "D66 16.9%", 
+    "PVV 16.7%",
+    "VVD 14.2% (LANDELIJK)" 
+  ]
+};
+
+        // Data State
+        let fetchTimer = null;
+        let currentRequestId = 0; // AQI req ID
+        let currentElevId = 0;    // Elevation req ID
+        let currentFloodId = 0;   // Flood risk req ID
+        let currentMuniId = 0;    // Municipality req ID
+        const aqiCache = new Map();
+        const elevCache = new Map();
+        const floodCache = new Map();
+        const muniCache = new Map();
+        const CACHE_TTL = 5 * 60 * 1000;
+
+        function getAQIStatus(aqi) {
+            if (aqi <= 20) return { label: 'Good', color: '#2ea043' };
+            if (aqi <= 40) return { label: 'Fair', color: '#79c0ff' };
+            if (aqi <= 60) return { label: 'Moderate', color: '#e3b341' };
+            if (aqi <= 80) return { label: 'Poor', color: '#ffa657' };
+            if (aqi <= 100) return { label: 'Very Poor', color: '#ff7b72' };
+            return { label: 'Extremely Poor', color: '#d2a8ff' };
+        }
+
+        async function fetchAQI(lat, lon) {
+            const reqId = ++currentRequestId;
+            const rLat = lat.toFixed(2);
+            const rLon = lon.toFixed(2);
+            const key = `${rLat},${rLon}`;
+            const now = Date.now();
+
+            if (aqiCache.has(key)) {
+                const entry = aqiCache.get(key);
+                if (now - entry.ts < CACHE_TTL) {
+                    updateAQIDisplay(entry.data);
+                    return;
+                }
+            }
+
+            try {
+                const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${rLat}&longitude=${rLon}&current=european_aqi,pm2_5,pm10,nitrogen_dioxide,ozone&domains=cams_europe&timezone=auto`;
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('API Error');
+                const json = await res.json();
+                
+                if (reqId === currentRequestId) {
+                    aqiCache.set(key, { ts: now, data: json });
+                    updateAQIDisplay(json);
+                }
+            } catch (e) {
+                if (reqId === currentRequestId) {
+                    const el = document.getElementById('disp-aqi');
+                    el.innerText = 'Error';
+                    el.style.color = 'var(--text)';
+                }
+            }
+        }
+
+        async function fetchElevation(lat, lon) {
+            const reqId = ++currentElevId;
+            const rLat = lat.toFixed(2);
+            const rLon = lon.toFixed(2);
+            const key = `${rLat},${rLon}`;
+            const now = Date.now();
+
+            if (elevCache.has(key)) {
+                const entry = elevCache.get(key);
+                if (now - entry.ts < CACHE_TTL) {
+                    updateElevationDisplay(entry.data);
+                    return;
+                }
+            }
+
+            try {
+                // Fetch basic weather metadata to get grid elevation
+                const url = `https://api.open-meteo.com/v1/forecast?latitude=${rLat}&longitude=${rLon}&current_weather=true`;
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('API Error');
+                const json = await res.json();
+                
+                if (reqId === currentElevId) {
+                    elevCache.set(key, { ts: now, data: json });
+                    updateElevationDisplay(json);
+                }
+            } catch (e) {
+                if (reqId === currentElevId) {
+                    document.getElementById('disp-elevation').innerText = 'Error';
+                }
+            }
+        }
+
+        function updateElevationDisplay(json) {
+            const el = document.getElementById('disp-elevation');
+            if (json.elevation === undefined) {
+                el.innerText = 'N/A';
+                return;
+            }
+            const elev = json.elevation;
+            let html = `${elev} m`;
+            
+            if (elev < 0) {
+                html += ` <span style="font-size: 11px; background: #ffebe9; color: #cf222e; padding: 2px 5px; border-radius: 4px; border: 1px solid rgba(248,81,73,0.1); margin-left: 6px;">Below Sea Level</span>`;
+            } else if (elev < 2) {
+                 html += ` <span style="font-size: 11px; background: #ddf4ff; color: #0969da; padding: 2px 5px; border-radius: 4px; border: 1px solid rgba(84,174,255,0.1); margin-left: 6px;">Sea Level</span>`;
+            }
+
+            el.innerHTML = html;
+        }
+
+        function pointInRing(x, y, ring) {
+            // Ray casting. ring: [[x,y], ...]. Treat lon as x and lat as y.
+            // If the point is exactly on an edge, behavior is not guaranteed, but acceptable for our use.
+            let inside = false;
+            for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+                const xi = ring[i][0], yi = ring[i][1];
+                const xj = ring[j][0], yj = ring[j][1];
+
+                const intersect = ((yi > y) !== (yj > y)) &&
+                    (x < ((xj - xi) * (y - yi)) / (yj - yi + 0.0) + xi);
+
+                if (intersect) inside = !inside;
+            }
+            return inside;
+        }
+
+        function geometryContainsPoint(geometry, lon, lat) {
+            if (!geometry) return false;
+
+            if (geometry.type === 'Polygon') {
+                const rings = geometry.coordinates;
+                if (!Array.isArray(rings) || rings.length === 0) return false;
+                // Only test outer ring; holes are ignored for simplicity.
+                return pointInRing(lon, lat, rings[0]);
+            }
+
+            if (geometry.type === 'MultiPolygon') {
+                const polys = geometry.coordinates;
+                if (!Array.isArray(polys)) return false;
+                for (const poly of polys) {
+                    if (Array.isArray(poly) && poly.length > 0) {
+                        if (pointInRing(lon, lat, poly[0])) return true;
+                    }
+                }
+                return false;
+            }
+
+            return false;
+        }
+
+        function updateFloodDisplay(inside) {
+            const el = document.getElementById('disp-flood');
+            const sub = document.getElementById('disp-flood-detail');
+
+            if (inside === true) {
+                el.innerText = 'In flood risk area';
+                el.style.color = '#cf222e';
+                return;
+            }
+
+            if (inside === false) {
+                el.innerText = 'Not in flood risk area';
+                el.style.color = '#2ea043';
+                return;
+            }
+
+            el.innerText = '-';
+            el.style.color = 'var(--text)';
+        }
+
+        async function fetchMunicipality(lat, lon) {
+            const reqId = ++currentMuniId;
+            const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+            
+            if (muniCache.has(key)) {
+                updateMunicipalityDisplay(muniCache.get(key));
+                return;
+            }
+
+            try {
+                // Fetch municipality name
+                const url = `${LOCSERVER_URL}?lat=${lat}&lon=${lon}&type=gemeente&rows=1`;
+                const res = await fetch(url);
+                const json = await res.json();
+                
+                let name = 'Unknown';
+                if (json.response && json.response.docs && json.response.docs.length > 0) {
+                    name = json.response.docs[0].weergavenaam; // e.g. "Gemeente Amsterdam"
+                }
+                
+                // Clean up string "Gemeente Amsterdam" -> "Amsterdam"
+                const cleanName = name.replace(/^Gemeente\s+/, '');
+                
+                if (reqId === currentMuniId) {
+                    muniCache.set(key, cleanName);
+                    updateMunicipalityDisplay(cleanName);
+                }
+            } catch (e) {
+                if (reqId === currentMuniId) {
+                    document.getElementById('disp-local-name').innerText = 'Error';
+                    document.getElementById('disp-vote-parties').innerText = '-';
+                }
+            }
+        }
+
+        function updateMunicipalityDisplay(name) {
+             document.getElementById('disp-local-name').innerText = name;
+             
+             // Lookup voting
+             let parties = VOTE_DATA[name];
+             if (!parties) parties = VOTE_DATA['DEFAULT'];
+             
+             const html = parties.map(p => `<div>${p}</div>`).join('');
+             document.getElementById('disp-vote-parties').innerHTML = html;
+        }
+
+        async function fetchFloodRisk(lat, lon) {
+            const reqId = ++currentFloodId;
+            const rLat = lat.toFixed(4);
+            const rLon = lon.toFixed(4);
+            const key = `${rLat},${rLon}`;
+            const now = Date.now();
+
+            if (floodCache.has(key)) {
+                const entry = floodCache.get(key);
+                if (now - entry.ts < CACHE_TTL) {
+                    updateFloodDisplay(entry.data?.inside);
+                    return;
+                }
+            }
+
+            try {
+                // Small bbox query to minimize payload, then do point-in-polygon client-side.
+                const delta = 0.0005; // ~55m
+                const minLat = (lat - delta).toFixed(6);
+                const maxLat = (lat + delta).toFixed(6);
+                const minLon = (lon - delta).toFixed(6);
+                const maxLon = (lon + delta).toFixed(6);
+
+                const url = `${FLOOD_RISK_ITEMS_URL}?f=json&bbox=${minLon},${minLat},${maxLon},${maxLat}&limit=50`;
+                const res = await fetch(url, { headers: { 'Accept': 'application/geo+json' } });
+                if (!res.ok) throw new Error('API Error');
+                const json = await res.json();
+
+                let inside = false;
+                if (json && Array.isArray(json.features) && json.features.length > 0) {
+                    inside = json.features.some(f => geometryContainsPoint(f.geometry, lon, lat));
+                }
+
+                if (reqId === currentFloodId) {
+                    floodCache.set(key, { ts: now, data: { inside } });
+                    updateFloodDisplay(inside);
+                }
+            } catch (e) {
+                if (reqId === currentFloodId) {
+                    const el = document.getElementById('disp-flood');
+                    el.innerText = 'Error';
+                    el.style.color = 'var(--text)';
+                    const sub = document.getElementById('disp-flood-detail');
+                    sub.innerText = '';
+                }
+            }
+        }
+
+        function updateAQIDisplay(json) {
+            if (!json.current) return;
+            const aqi = json.current.european_aqi;
+            const { label, color } = getAQIStatus(aqi);
+            
+            const el = document.getElementById('disp-aqi');
+            el.innerText = `${label} (${aqi})`;
+            el.style.color = color;
+
+            const pm25 = json.current['pm2_5'];
+            const o3 = json.current['ozone'];
+            const no2 = json.current['nitrogen_dioxide'];
+            document.getElementById('disp-aqi-detail').innerText = `PM2.5: ${pm25} | NO₂: ${no2} | O₃: ${o3}`;
+        }
+
+        async function initMap() {
+            try {
+                // Fetch data first
+                const provRes = await fetch(MAP_URL).then(r => r.json());
+                initLeaflet(provRes);
+            } catch (e) {
+                document.getElementById('map-container').innerHTML = `Error: ${e.message}`;
+            }
+        }
+
+        const EMISSIONS = [
+            { name: "Port of Rotterdam",  lat: 51.95, lon: 4.10,  id: "rotterdam" },
+            { name: "Tata Steel",         lat: 52.48, lon: 4.60,  id: "tata" },
+            { name: "Chemelot",           lat: 50.96, lon: 5.82,  id: "chemelot" },
+            { name: "Eemshaven",          lat: 53.44, lon: 6.83,  id: "eemshaven" }
+        ];
+
+        let map, pinLayer;
+
+        function initLeaflet(provGeoJson) {
+            // Init map (CartoDB Positron for light clean look)
+            map = L.map('map-container').setView([52.15, 5.3], 8);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                subdomains: 'abcd',
+                maxZoom: 19
+            }).addTo(map);
+
+            // 1. Provinces
+            L.geoJSON(provGeoJson, {
+                style: { color: '#aaaaaa', weight: 1, fillOpacity: 0.05, fillColor: '#000' },
+                onEachFeature: (feature, layer) => {
+                    const name = feature.properties.statnaam || feature.properties.name;
+                    layer.on('mouseover', () => document.getElementById('disp-name').innerText = name);
+                    layer.on('mouseout', () => document.getElementById('disp-name').innerText = '-');
+                }
+            }).addTo(map);
+
+            // 2. Emissions
+            EMISSIONS.forEach(site => {
+                L.circleMarker([site.lat, site.lon], {
+                    radius: 6, color: '#d73a49', fillColor: '#d73a49', fillOpacity: 0.8
+                }).addTo(map).bindTooltip(site.name);
+            });
+
+            // 4. Pinning interactions
+            pinLayer = L.layerGroup().addTo(map);
+
+            map.on('mousemove', (e) => {
+                document.getElementById('disp-cursor').innerText = 
+                    `${e.latlng.lat.toFixed(4)}° N, ${e.latlng.lng.toFixed(4)}° E`;
+            });
+            
+            map.on('click', (e) => {
+                const { lat, lng } = e.latlng;
+                
+                // Update UI
+                document.getElementById('disp-selected').innerText = 
+                    `${lat.toFixed(4)}° N, ${lng.toFixed(4)}° E`;
+                
+                // Draw pin
+                pinLayer.clearLayers();
+                L.circleMarker([lat, lng], {
+                    radius: 5, color: '#2ea043', fillColor: '#2ea043', fillOpacity: 1
+                }).addTo(pinLayer);
+
+                // Fetch Data
+                document.getElementById('disp-aqi').innerText = "Loading...";
+                document.getElementById('disp-aqi-detail').innerText = "";
+                document.getElementById('disp-elevation').innerText = "Loading...";
+                document.getElementById('disp-flood').innerText = "Loading...";
+                document.getElementById('disp-flood-detail').innerText = "";
+                document.getElementById('disp-local-name').innerText = "Loading...";
+                document.getElementById('disp-vote-parties').innerText = "-";
+                
+                fetchAQI(lat, lng);
+                fetchElevation(lat, lng);
+                fetchFloodRisk(lat, lng);
+                fetchMunicipality(lat, lng);
+            });
+        }
+
+        initMap();
+    </script>
+</body>
+</html>
