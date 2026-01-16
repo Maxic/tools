@@ -140,6 +140,15 @@
         // OGC API Features endpoint (items). We query with a small bbox around the clicked point.
         const FLOOD_RISK_ITEMS_URL = 'https://api.pdok.nl/rws/overstromingen-risicogebied/ogc/v1/collections/risk_zone/items';
 
+        // PDOK / RVO - Nationale Parken (INSPIRE geharmoniseerd) - OGC API Features (GeoJSON)
+        // We lazy-load this when the overlay is enabled in the layer control.
+        // Collection id: protectedsite
+        const NATIONAL_PARKS_ITEMS_URL = 'https://api.pdok.nl/rvo/nationale-parken-geharmoniseerd/ogc/v1/collections/protectedsite/items?f=json';
+
+        // NASA GIBS (Global Imagery Browse Services) - VIIRS night lights (proxy for light pollution)
+        // Note: This is a global raster layer with low-ish native zoom; Leaflet will scale it at higher zoom levels.
+        const NIGHT_LIGHTS_TILES_URL = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_CityLights_2012/default/2012-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpg';
+
         // PDOK Locatieserver (Reverse Geocoding)
         const LOCSERVER_URL = 'https://api.pdok.nl/bzk/locatieserver/search/v3_1/reverse';
 
@@ -2202,6 +2211,54 @@ const VOTE_DATA = {
             }
         }
 
+        function getNationalParkLabel(props) {
+            if (!props) return 'National Park';
+            return (
+                props.name ||
+                props.naam ||
+                props.protectedSiteName ||
+                props.designation ||
+                props.siteName ||
+                'National Park'
+            );
+        }
+
+        async function ensureNationalParksLoaded() {
+            if (nationalParksLoaded || nationalParksLoading) return;
+            if (!nationalParksLayer) return;
+
+            nationalParksLoading = true;
+            try {
+                const res = await fetch(`${NATIONAL_PARKS_ITEMS_URL}&limit=250`, {
+                    headers: { 'Accept': 'application/geo+json' }
+                });
+                if (!res.ok) throw new Error(`API Error (${res.status})`);
+
+                const geojson = await res.json();
+                const layer = L.geoJSON(geojson, {
+                    style: {
+                        color: '#2ea043',
+                        weight: 2,
+                        fillColor: '#2ea043',
+                        fillOpacity: 0.12
+                    },
+                    onEachFeature: (feature, l) => {
+                        const label = getNationalParkLabel(feature.properties);
+                        l.bindTooltip(label, { sticky: true });
+                    }
+                });
+
+                layer.addTo(nationalParksLayer);
+
+                nationalParksLoaded = true;
+            } catch (e) {
+                // Keep overlay empty but don't spam the user; log for debugging
+                console.warn('Failed to load national parks overlay', e);
+            } finally {
+                nationalParksLoading = false;
+            }
+        }
+
         function updateAQIDisplay(json) {
             if (!json.current) return;
             const aqi = json.current.european_aqi;
@@ -2234,7 +2291,9 @@ const VOTE_DATA = {
             { name: "Eemshaven",          lat: 53.44, lon: 6.83,  id: "eemshaven" }
         ];
 
-        let map, pinLayer;
+        let map, pinLayer, nationalParksLayer;
+        let nationalParksLoaded = false;
+        let nationalParksLoading = false;
 
         function initLeaflet(provGeoJson) {
             // Init map (CartoDB Positron for light clean look)
@@ -2246,7 +2305,7 @@ const VOTE_DATA = {
             }).addTo(map);
 
             // 1. Provinces
-            L.geoJSON(provGeoJson, {
+            const provincesLayer = L.geoJSON(provGeoJson, {
                 style: { color: '#aaaaaa', weight: 1, fillOpacity: 0.05, fillColor: '#000' },
                 onEachFeature: (feature, layer) => {
                     const name = feature.properties.statnaam || feature.properties.name;
@@ -2256,13 +2315,37 @@ const VOTE_DATA = {
             }).addTo(map);
 
             // 2. Emissions
+            const emissionsLayer = L.layerGroup().addTo(map);
             EMISSIONS.forEach(site => {
                 L.circleMarker([site.lat, site.lon], {
                     radius: 6, color: '#d73a49', fillColor: '#d73a49', fillOpacity: 0.8
-                }).addTo(map).bindTooltip(site.name);
+                }).addTo(emissionsLayer).bindTooltip(site.name);
             });
 
-            // 4. Pinning interactions
+            // 3. National Parks (Lazy loaded)
+            nationalParksLayer = L.layerGroup();
+
+            // 4. Light pollution proxy (night lights raster) - default OFF
+            const nightLightsLayer = L.tileLayer(NIGHT_LIGHTS_TILES_URL, {
+                attribution: '&copy; NASA GIBS (VIIRS City Lights 2012)',
+                opacity: 0.55,
+                maxZoom: 19,
+                maxNativeZoom: 8
+            });
+
+            // Layer Control
+            L.control.layers({}, {
+                'Provinces': provincesLayer,
+                'Industrial Emissions': emissionsLayer,
+                'National Parks': nationalParksLayer,
+                'Night Lights (Satellite)': nightLightsLayer
+            }, { collapsed: true }).addTo(map);
+
+            map.on('overlayadd', (e) => {
+                if (e.layer === nationalParksLayer) ensureNationalParksLoaded();
+            });
+
+            // 5. Pinning interactions
             pinLayer = L.layerGroup().addTo(map);
 
             map.on('mousemove', (e) => {
