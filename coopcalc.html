@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wooncoöperatie Calculator</title>
+    <style>
+        :root {
+            --bg: #f4f4f9;
+            --card: #ffffff;
+            --text: #333333;
+            --accent: #2c3e50;
+            --highlight: #27ae60;
+        }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            line-height: 1.5;
+        }
+        .container {
+            max-width: 600px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .card {
+            background: var(--card);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 { margin: 0 0 10px 0; font-size: 1.5rem; color: var(--accent); }
+        h2 { margin: 0 0 15px 0; font-size: 1.2rem; color: var(--accent); border-bottom: 2px solid var(--bg); padding-bottom: 10px; }
+        
+        .input-group { margin-bottom: 15px; }
+        label { display: block; font-weight: 500; margin-bottom: 5px; font-size: 0.9rem; }
+        input {
+            width: 100%;
+            padding: 10px;
+            box-sizing: border-box;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 1rem;
+        }
+        
+        .result-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 0.95rem;
+        }
+        .result-row.total {
+            font-weight: bold;
+            border-top: 1px solid #eee;
+            padding-top: 10px;
+            margin-top: 10px;
+            font-size: 1.1rem;
+        }
+        .main-output {
+            background: var(--accent);
+            color: white;
+            text-align: center;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+        .main-output .amount {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--highlight);
+        }
+        .main-output .label { opacity: 0.8; font-size: 0.9rem; }
+        
+        .details { font-size: 0.85rem; color: #666; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>Wooncoöperatie Rekenmachine</h1>
+            <p>Bereken de indicatieve huurprijs voor een pand in verenigingsverband.</p>
+            
+            <div class="input-group">
+                <label>Inkoopwaarde Pand (€)</label>
+                <input type="text" inputmode="numeric" id="price" value="1.600.000">
+            </div>
+            <div class="input-group">
+                <label>Inschatting Verbouwing (€)</label>
+                <input type="text" inputmode="numeric" id="reno" value="400.000">
+            </div>
+            
+            <div class="input-group">
+                <label>Service & Onderhoud (Totaal per maand €)</label>
+                <input type="text" inputmode="numeric" id="service" value="350">
+            </div>
+            
+            <div class="input-group">
+                <label>Aantal Woonunits/Huishoudens</label>
+                <input type="number" id="units" value="1" min="1">
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Financieel Plaatje</h2>
+            
+            <div class="result-row">
+                <span>Aanschaf</span>
+                <span id="out-price">€0</span>
+            </div>
+            <div class="result-row">
+                <span>Overdrachtsbelasting (10%)</span>
+                <span id="out-tax">€0</span>
+            </div>
+             <div class="result-row">
+                <span>Verbouwing</span>
+                <span id="out-reno">€0</span>
+            </div>
+            <div class="result-row total">
+                <span>Totale Investering (100% Lening)</span>
+                <span id="out-total-invest">€0</span>
+            </div>
+            
+            <div class="details">
+                Financiering: 4,5% rente, 30 jaar annuïteit.
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Maandlasten & Huur</h2>
+            
+            <div class="result-row">
+                <span>Hypotheeklasten (Bruto)</span>
+                <span id="out-mortgage">€0</span>
+            </div>
+            <div class="result-row">
+                <span>Service & Onderhoud</span>
+                <span id="out-service">€0</span>
+            </div>
+            <div class="result-row total">
+                <span>Totaal Benodigd Inkomen</span>
+                <span id="out-total-monthly">€0</span>
+            </div>
+
+            <div class="main-output">
+                <div class="label">Vereiste Huur per Unit</div>
+                <div class="amount" id="out-rent">€0</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Constants from specification
+        const TAX_RATE = 0.10; // 10% Transfer Tax
+        const INTEREST_RATE = 0.045; // 4.5% Bank Interest
+        const LOAN_YEARS = 30;
+
+        // Elements
+        const inputs = ['price', 'reno', 'service', 'units'].map(id => document.getElementById(id));
+        const els = {
+            price: document.getElementById('out-price'),
+            tax: document.getElementById('out-tax'),
+            reno: document.getElementById('out-reno'),
+            totalInvest: document.getElementById('out-total-invest'),
+            mortgage: document.getElementById('out-mortgage'),
+            service: document.getElementById('out-service'),
+            totalMonthly: document.getElementById('out-total-monthly'),
+            rent: document.getElementById('out-rent')
+        };
+
+        function fmt(num) {
+            return num.toLocaleString('nl-NL', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
+        }
+
+        function parseVal(str) {
+            if (typeof str !== 'string') return str;
+            // Remove dots (thousands), replace comma with dot (decimal)
+            return parseFloat(str.replace(/\./g, '').replace(',', '.')) || 0;
+        }
+
+        function formatInput(el) {
+            const val = parseVal(el.value);
+            if (!isNaN(val) && el.value.trim() !== '') {
+               // Re-format with dots
+               el.value = val.toLocaleString('nl-NL');
+            }
+        }
+
+        function calc() {
+            // Get values
+            const price = parseVal(inputs[0].value);
+            const reno = parseVal(inputs[1].value);
+            const service = parseVal(inputs[2].value);
+            const units = parseInt(inputs[3].value) || 1;
+
+            // Capital
+            const tax = price * TAX_RATE;
+            const totalInvest = price + tax + reno; 
+
+            // Mortgage (Annuity)
+            // PMT = P * (r(1+r)^n) / ((1+r)^n - 1)
+            const r = INTEREST_RATE / 12;
+            const n = LOAN_YEARS * 12;
+            
+            const mortgageMonthly = totalInvest > 0 
+                ? totalInvest * (r * Math.pow(1+r, n)) / (Math.pow(1+r, n) - 1)
+                : 0;
+
+            const totalMonthly = mortgageMonthly + service;
+            const rentPerUnit = units > 0 ? totalMonthly / units : 0;
+
+            // Output
+            els.price.textContent = fmt(price);
+            els.tax.textContent = fmt(tax);
+            els.reno.textContent = fmt(reno);
+            els.totalInvest.textContent = fmt(totalInvest);
+            
+            els.mortgage.textContent = fmt(mortgageMonthly);
+            els.service.textContent = fmt(service);
+            els.totalMonthly.textContent = fmt(totalMonthly);
+            els.rent.textContent = fmt(rentPerUnit);
+        }
+
+        // Bind listeners
+        inputs.forEach(el => {
+            el.addEventListener('input', calc);
+            // Auto-format on blur
+            if (el.type === 'text') {
+                el.addEventListener('blur', () => formatInput(el));
+            }
+        });
+        
+        // Init
+        calc();
+    </script>
+</body>
+</html>
